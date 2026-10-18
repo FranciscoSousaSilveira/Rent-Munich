@@ -1,0 +1,11 @@
+.env
+.env.*
+!.env.example
+.clasp.json
+*credentials*.json
+*secret*.json
+*-estado.json
+bin/
+*.zip
+*.tar.gz
+node_modules/

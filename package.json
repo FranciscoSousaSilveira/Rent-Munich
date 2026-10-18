@@ -1,0 +1,25 @@
+{
+  "name": "rent-munich",
+  "version": "1.1.0",
+  "description": "Filtro de anúncios de arrendamento em Munique via Google Apps Script, Gemini e Obscura",
+  "main": "Code.gs",
+  "scripts": {
+    "test": "node tests/filter.test.cjs",
+    "test:all": "node tests/filter.test.cjs && node tests/parsers.test.cjs && node tests/scrape-script.test.mjs",
+    "setup:obscura": "node extractor/download-obscura.cjs",
+    "extractor": "node extractor/server.cjs",
+    "extract": "node extractor/cli.cjs",
+    "scrape": "node scripts/scrape-munich-ad.mjs"
+  },
+  "keywords": [
+    "munich",
+    "rent",
+    "real-estate",
+    "gemini",
+    "apps-script",
+    "obscura",
+    "mvv"
+  ],
+  "author": "",
+  "license": "ISC"
+}
