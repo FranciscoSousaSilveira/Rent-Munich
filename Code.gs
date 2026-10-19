@@ -33,6 +33,18 @@ function preparar() {
 function testar() { runRent_(true); }
 function verificarAlertas() { runRent_(false); }
 
+// Reinicia o temporizador de repetição (retryAt) e a contagem de chamadas diárias, forçando o teste imediato.
+function reiniciarTentativas() {
+  assertAccount_();
+  const state = loadState_();
+  state.retryAt = 0;
+  state.calls = 0;
+  state.lastError = null;
+  saveState_(state);
+  console.log('Temporizador de repetição e contador de chamadas reiniciados com sucesso.');
+  testar();
+}
+
 // Re-analyse previously processed emails without resending delivered listings.
 function reanalisarComPaginas() {
   assertAccount_();
@@ -203,8 +215,16 @@ function runRent_(previewOnly) {
     const live = !previewOnly && PropertiesService.getScriptProperties().getProperty('MODE') === 'LIVE';
     // Flush earlier results even if the API is temporarily unavailable.
     if (live) deliver_(state);
+    if (previewOnly) {
+      state.retryAt = 0;
+    }
     if (Date.now() < state.retryAt || state.calls >= RENT.maxApiCallsPerDay) {
-      console.log('À espera da quota/intervalo de repetição. Os emails continuam pendentes.');
+      if (state.calls >= RENT.maxApiCallsPerDay) {
+        console.log('Limite diário de chamadas (' + state.calls + '/' + RENT.maxApiCallsPerDay + ') atingido hoje. Executa reiniciarTentativas() para repor.');
+      } else {
+        const mins = Math.ceil((state.retryAt - Date.now()) / 60000);
+        console.log('À espera do intervalo de repetição (' + mins + ' min restantes) devido a: ' + (state.lastError || 'erro anterior') + '. Executa reiniciarTentativas() para tentar já.');
+      }
       saveState_(state); return;
     }
     const emails = nextEmails_(state);
