@@ -11,11 +11,12 @@ const RENT = Object.freeze({
   tumGlobalId: 'de:09184:460',
   marienGlobalId: 'de:09162:2',
   model: 'gemini-3.5-flash-lite',
-  maxApiCallsPerDay: 20, // Local ceiling, NOT a promise of provider quota.
-  maxNotificationsPerDay: 12,
+  maxApiCallsPerDay: 144, // Local ceiling; provider free-tier limits still apply.
+  maxNotificationsPerDay: 90, // Leave headroom below the consumer MailApp daily recipient quota.
   batchSize: 3,
   maxEmailChars: 32000,
-  intervalMinutes: 10
+  intervalMinutes: 5,
+  maxAlertAgeHours: 24
 });
 
 function preparar() {
@@ -244,7 +245,7 @@ function runRent_(previewOnly) {
             continue;
           }
           let transit = null;
-          if (item.location) {
+          if (item.location && !isExchangeOnly_(item)) {
             const locKey = item.location.trim().toLowerCase();
             if (!transitCache.has(locKey)) {
               transitCache.set(locKey, fetchMvgTransit_(item.location));
@@ -254,6 +255,10 @@ function runRent_(previewOnly) {
           const decision = evaluate_(item, transit);
           const page = (source.pages || []).find(p => p.linkIndex === item.linkIndex);
           if (page && page.status !== 'OK') {
+            if (['HTTP_404','HTTP_410'].includes(page.status)) {
+              decision.status = 'REJECT';
+              decision.rejected.push('Página do anúncio indisponível (' + page.status + ').');
+            }
             const portalName = page.portal ? page.portal.toUpperCase() : 'WG';
             if (page.status === 'EXTRACTOR_LOCAL_NAO_CONFIGURADO') {
               decision.missing.push('Página ' + portalName + ' lida via email (Obscura local não configurado).');
@@ -295,12 +300,24 @@ function runRent_(previewOnly) {
 }
 
 function nextEmails_(state) {
-  const query = 'label:"' + RENT.label + '" -in:trash -in:spam';
-  const threads = GmailApp.search(query, state.cursor, 30);
-  if (!threads.length) { state.cursor = 0; return []; }
+  const cutoff = Date.now() - RENT.maxAlertAgeHours * 3600000;
+  const query = 'label:"' + RENT.label + '" -in:trash -in:spam after:' + Math.floor(cutoff / 1000);
+  const messages = [];
+  const seen = new Set();
+  // Start with recent conversations every run. Gmail returns messages inside each thread oldest first.
+  for (let offset=0; offset<500; offset+=100) {
+    const threads = GmailApp.search(query, offset, 100);
+    for (const thread of threads) for (const msg of thread.getMessages()) {
+      const id = msg.getId();
+      if (seen.has(id) || state.messages[id] || msg.getDate().getTime() < cutoff) continue;
+      seen.add(id); messages.push(msg);
+    }
+    if (threads.length < 100) break;
+  }
+  messages.sort((a,b) => b.getDate().getTime() - a.getDate().getTime());
+  state.cursor = 0;
   const emails = [];
-  for (let t = 0; t < threads.length; t++) {
-    for (const msg of threads[t].getMessages()) {
+    for (const msg of messages) {
       const id = msg.getId();
       if (state.messages[id]) continue;
       // A label applies to a whole conversation; ignore own replies / notifications.
@@ -315,12 +332,9 @@ function nextEmails_(state) {
       const links = links_(html + '\n' + text);
       emails.push({id, date: msg.getDate().toISOString(), text, links, linkHints:anchorHints_(html,links)});
       if (emails.length >= RENT.batchSize) {
-        state.cursor += t; // Revisit this thread to pick up remaining messages next run.
         return emails;
       }
     }
-  }
-  state.cursor = threads.length < 30 ? 0 : state.cursor + threads.length;
   return emails;
 }
 
@@ -730,7 +744,7 @@ function schema_() {
     bedrooms:num, rooms:num, availableBedrooms:num,
     warmRent:num, coldRent:num, totalRent:num,
     rentBasis:{type:'STRING',enum:['whole','person','unknown']},
-    kitchen:tri, furnished:tri, longTerm:tri, anmeldung:tri, wgAllowed:tri,
+    kitchen:tri, furnished:tri, longTerm:tri, anmeldung:tri, wgAllowed:tri, exchangeRequired:tri,
     moveIn:str, latestMoveIn:str, evidence:str, notes:str
   };
   return {type:'OBJECT', properties:{emails:{type:'ARRAY',items:{type:'OBJECT',properties:{
@@ -757,6 +771,9 @@ rentBasis whole or person refers to all supplied prices; unknown if ambiguous or
 report the MAXIMUM room price per person and state that clearly in notes (never average to hide an expensive room).
 kitchen=yes only if installed kitchen is explicitly present/included; a kitchen room alone is unknown.
 longTerm=yes for unbefristet or explicitly long term; no for explicit short temporary stays; otherwise unknown.
+exchangeRequired=yes if the offer requires swapping/exchanging an existing tenancy or apartment (Tauschwohnung,
+Wohnungsswap, Wohnungstausch, nur im Tausch), even when the price looks like a normal rental. The user has no apartment to offer in exchange.
+Set no when normal rental or explicitly no exchange requirement; unknown when unclear. Preserve any exchange requirement in notes.
 moveIn is earliest advertised YYYY-MM-DD, or empty; latestMoveIn only if a binding latest date is explicit.
 wgAllowed=no only if shared occupation is explicitly forbidden; otherwise yes/unknown as supported.
 linkIndex refers to an index in that email's links list for the listing; -1 if absent. Never invent a URL.
@@ -832,6 +849,7 @@ function validateExtraction_(result, emails) {
 function evaluate_(x, transit) {
   const missing = [];
   const rejected = [];
+  if (isExchangeOnly_(x)) rejected.push('Exige troca de casa/contrato; procura apenas arrendamento normal.');
   let people = null, priority = 5;
 
   if (transit && transit.ok) {
@@ -884,9 +902,32 @@ function evaluate_(x, transit) {
     preferredArea:preferred, missing, rejected, transit:(transit && transit.ok) ? transit : null};
 }
 
+function isExchangeOnly_(item) {
+  if (item.exchangeRequired === 'yes') return true;
+  const text = normalizeEvidence_([item.title,item.notes,item.evidence].filter(Boolean).join(' ')).toLowerCase()
+    .replace(/\b(?:keine?|ohne|nicht(?:\s+nur)?)\s+(?:tauschwohnung|wohnungstausch|wohnungsswap|tauschpflicht)\b/g,'')
+    .replace(/\b(?:no|not an?)\s+(?:apartment |flat |housing )?(?:swap|exchange)(?: required)?\b/g,'')
+    .replace(/\b(?:não exige|sem|não é (?:uma )?)\s*troca(?: de (?:casa|apartamento))?/g,'');
+  return /\b(?:tauschwohnung|wohnungsswap|wohnungstausch|tauschpflicht|nur (?:im|gegen) tausch|apartment swap|flat swap|housing swap)\b/.test(text) ||
+    /\b(?:exige|obrigat[oó]ri[ao]|apartamento de|an[uú]ncio de)\s+troca\b/.test(text);
+}
+function expirePending_(state, now) {
+  const cutoff = (now || Date.now()) - RENT.maxAlertAgeHours * 3600000;
+  for (const record of Object.values(state.listings)) {
+    if (record.delivery !== 'PENDING') continue;
+    if (isExchangeOnly_(record.item)) {
+      record.delivery = 'REJECTED';
+      record.decision.status = 'REJECT';
+      record.decision.rejected.push('Exige troca de casa/contrato.');
+    } else if (!Number.isFinite(Date.parse(record.sourceDate)) || Date.parse(record.sourceDate) < cutoff) {
+      record.delivery = 'STALE';
+    }
+  }
+}
 function orderedPending_(state) {
   return Object.entries(state.listings).filter(([,r]) => r.delivery === 'PENDING')
-    .sort((a,b) => a[1].decision.priority - b[1].decision.priority ||
+    .sort((a,b) => (Date.parse(b[1].sourceDate) || 0) - (Date.parse(a[1].sourceDate) || 0) ||
+      a[1].decision.priority - b[1].decision.priority ||
       Number(b[1].decision.ideal) - Number(a[1].decision.ideal) ||
       Number(b[1].decision.preferredArea) - Number(a[1].decision.preferredArea) ||
       Number(b[1].item.furnished === 'yes') - Number(a[1].item.furnished === 'yes') ||
@@ -1004,6 +1045,8 @@ function sendTelegramAlert_(r) {
 }
 
 function deliver_(state) {
+  // Recheck existing pending items too: updates must not flush old swaps or stale alerts.
+  expirePending_(state);
   const pending = orderedPending_(state).slice(0, 12);
   // Repair links on older pending records using the original HTML, without another Gemini call.
   for (const [,r] of pending) {

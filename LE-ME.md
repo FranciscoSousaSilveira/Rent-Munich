@@ -1,5 +1,13 @@
 # Filtro de casas em Munique
 
+## Atualização de 23/10/2026: trocas e atraso
+
+- Exclui Tauschwohnung, Wohnungsswap, Wohnungstausch e requisitos de troca extraídos pela IA. Aplica a exclusão também a resultados antigos ainda pendentes, antes do envio.
+- Seleciona primeiro as mensagens mais recentes entre as conversas, em vez das mais antigas dentro de cada conversa. Procura alertas das últimas 24 horas; resultados pendentes mais antigos deixam de ser enviados (estado `STALE`). Isso é uma regra de frescura, não prova de que a casa continua disponível.
+- Intervalo de 5 minutos, teto local de 144 chamadas à API e 90 notificações por dia. As quotas efetivas da conta continuam a prevalecer; não é necessário ativar faturação. Estes valores substituem os limites anteriores referidos abaixo. Mensagens só com avisos ou zero anúncios continuam sem gerar email.
+- Páginas consultadas que devolvam HTTP 404/410 são excluídas. Nem todos os portais fornecem um sinal de expiração legível e os anúncios podem expirar depois da análise.
+- Para aplicar: substituir `Code.gs` no Apps Script, guardar e executar `ativar` novamente para recriar o acionador com 5 minutos. Não executar `reanalisarComPaginas`: não é necessário apagar o histórico. Propriedades, credenciais e ligações existentes são preservadas.
+
 Programa para Google Apps Script. Conta de origem: **munichrenttestes@gmail.com**. Destino fixo de email: **fpassilveira@gmail.com**. Notificações instantâneas via **Telegram Bot**.
 
 **Estado: preparado localmente; pronto a instalar no Google Apps Script com suporte a Obscura, cálculo de percursos MVV e alertas Telegram.** Começa em modo de pré-visualização.

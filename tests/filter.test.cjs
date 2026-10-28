@@ -59,8 +59,8 @@ test('known prohibition of WG use rejects multi-person apartment', () => assert.
 test('never claims a journey time is verified', () => assert.ok(evaluate({}).missing[0].includes('por confirmar')));
 test('furnished preferred among otherwise equivalent options', () => {
   const s=ctx.emptyState_();
-  s.listings.a={item:{...base,furnished:'no'},decision:evaluate({}),delivery:'PENDING'};
-  s.listings.b={item:base,decision:evaluate({}),delivery:'PENDING'};
+  s.listings.a={item:{...base,furnished:'no'},decision:evaluate({}),sourceDate:new Date().toISOString(),delivery:'PENDING'};
+  s.listings.b={item:base,decision:evaluate({}),sourceDate:new Date().toISOString(),delivery:'PENDING'};
   assert.equal(ctx.orderedPending_(s)[0][0],'b');
 });
 test('portal IDs deduplicate tracking variants', () => {
@@ -90,22 +90,22 @@ test('missing or duplicated email result cannot mark batch processed', () => {
 
 // Delivery/state checks use mocks: no network or actual emails.
 test('daily notification cap leaves pending results for later', () => {
-  const s = ctx.emptyState_(); s.notifications=12;
-  s.listings.a={item:base,decision:evaluate({}),delivery:'PENDING',link:'https://www.wg-gesucht.de/123.html'};
+  const s = ctx.emptyState_(); s.notifications=vm.runInContext('RENT.maxNotificationsPerDay',ctx);
+  s.listings.a={item:base,decision:evaluate({}),sourceDate:new Date().toISOString(),delivery:'PENDING',link:'https://www.wg-gesucht.de/123.html'};
   ctx.deliver_(s); assert.equal(s.listings.a.delivery,'PENDING');
 });
 test('send failure leaves ambiguous state, prevents automatic duplicate', () => {
   let sends=0;
   ctx.saveState_=() => {};
   ctx.MailApp={getRemainingDailyQuota:()=>10,sendEmail:()=>{ sends++; throw new Error('network'); }};
-  const s=ctx.emptyState_(); s.listings.a={item:base,decision:evaluate({}),delivery:'PENDING',link:'https://www.wg-gesucht.de/123.html',sourceId:'1'};
+  const s=ctx.emptyState_(); s.listings.a={item:base,decision:evaluate({}),sourceDate:new Date().toISOString(),delivery:'PENDING',link:'https://www.wg-gesucht.de/123.html',sourceId:'1'};
   assert.throws(()=>ctx.deliver_(s)); assert.equal(s.listings.a.delivery,'SENDING');
   ctx.deliver_(s); assert.equal(sends,1);
 });
 test('successful notification goes only to fixed user recipient, once', () => {
   let sends=0;
   ctx.MailApp={getRemainingDailyQuota:()=>10,sendEmail:m=>{ sends++; assert.equal(m.to,'fpassilveira@gmail.com'); }};
-  const s=ctx.emptyState_(); s.listings.a={item:base,decision:evaluate({}),delivery:'PENDING',link:'https://www.wg-gesucht.de/123.html',sourceId:'1'};
+  const s=ctx.emptyState_(); s.listings.a={item:base,decision:evaluate({}),sourceDate:new Date().toISOString(),delivery:'PENDING',link:'https://www.wg-gesucht.de/123.html',sourceId:'1'};
   ctx.deliver_(s); ctx.deliver_(s); assert.equal(sends,1); assert.equal(s.listings.a.delivery,'SENT');
 });
 const wgFixture = '<html><nav>Publicidade 20€</nav><h1 class="detailed-view-title">Apartamento de teste</h1>' +
@@ -184,7 +184,7 @@ test('manual review alone never sends a zero-listing email or consumes quota', (
   assert.equal(sends,0); assert.equal(s.notifications,0);
   assert.equal(s.messages['notice:a'],undefined);
   assert.equal(s.manual.a,'Página inacessível');
-  s.listings.valid={item:base,decision:evaluate({}),delivery:'PENDING',link:'https://www.wg-gesucht.de/123.html',sourceId:'b'};
+  s.listings.valid={item:base,decision:evaluate({}),sourceDate:new Date().toISOString(),delivery:'PENDING',link:'https://www.wg-gesucht.de/123.html',sourceId:'b'};
   ctx.deliver_(s);
   assert.equal(sends,1); assert.equal(s.messages['notice:a'],undefined);
 });
@@ -199,7 +199,7 @@ test('notification contains property links in HTML and plain text, no secondary 
   let sent;
   ctx.MailApp={getRemainingDailyQuota:()=>10,sendEmail:m=>{sent=m;}};
   const s=ctx.emptyState_();
-  s.listings.a={item:base,decision:evaluate({}),delivery:'PENDING',sourceId:'1',link:'https://www.wg-gesucht.de/123.html'};
+  s.listings.a={item:base,decision:evaluate({}),sourceDate:new Date().toISOString(),delivery:'PENDING',sourceId:'1',link:'https://www.wg-gesucht.de/123.html'};
   s.manual.x='A manual notice';
   ctx.deliver_(s);
   assert.ok(sent.htmlBody.includes('Ver anúncio no site'));
@@ -210,7 +210,7 @@ test('notification contains property links in HTML and plain text, no secondary 
 test('unrecoverable property link is retained for review without notification', () => {
   let n=0; ctx.MailApp={getRemainingDailyQuota:()=>10,sendEmail:()=>n++};
   ctx.GmailApp={getMessageById:()=>({getBody:()=>'<p>No link</p>',getPlainBody:()=>''})};
-  const s=ctx.emptyState_();s.listings.a={item:base,decision:evaluate({}),delivery:'PENDING',sourceId:'1',link:''};
+  const s=ctx.emptyState_();s.listings.a={item:base,decision:evaluate({}),sourceDate:new Date().toISOString(),delivery:'PENDING',sourceId:'1',link:''};
   ctx.deliver_(s); assert.equal(n,0);assert.equal(s.listings.a.delivery,'NEEDS_LINK');
 });
 test('recognises ImmoScout24 and Immowelt listing URLs', () => {
@@ -443,5 +443,29 @@ test('sendTelegramAlert_ returns gracefully when Telegram credentials missing', 
   assert.equal(res.reason, 'TELEGRAM_NAO_CONFIGURADO');
 });
 
+test('exchange-only offers rejected in German and Portuguese', () => {
+  for (const title of ['TAUSCHWOHNUNG Ruhige Wohnung','Wohnungsswap - Nordendstraße','Wohnungstausch in München','Nur im Tausch Wohnung','Apartamento de troca']) {
+    assert.equal(evaluate({title}).status,'REJECT',title);
+  }
+  assert.equal(evaluate({exchangeRequired:'yes'}).status,'REJECT');
+  assert.equal(evaluate({title:'Normale Wohnung - keine Tauschwohnung'}).status,'REVIEW');
+  assert.equal(evaluate({notes:'Não exige troca de casa'}).status,'REVIEW');
+});
+test('pending swaps and alerts older than 24h are removed before delivery', () => {
+  const now=Date.now(), s=ctx.emptyState_();
+  s.listings.swap={item:{...base,title:'Wohnungsswap'},decision:evaluate({}),delivery:'PENDING',sourceDate:new Date(now).toISOString()};
+  s.listings.old={item:base,decision:evaluate({}),delivery:'PENDING',sourceDate:new Date(now-25*3600000).toISOString()};
+  s.listings.fresh={item:base,decision:evaluate({}),delivery:'PENDING',sourceDate:new Date(now-3600000).toISOString()};
+  ctx.expirePending_(s,now);
+  assert.equal(s.listings.swap.delivery,'REJECTED');assert.equal(s.listings.old.delivery,'STALE');assert.equal(s.listings.fresh.delivery,'PENDING');
+});
+test('queue selects newest messages across threads and ignores old thread members', () => {
+  const now=Date.now();
+  const msg=(id,hours)=>({getId:()=>id,getDate:()=>new Date(now-hours*3600000),getFrom:()=> 'webmaster@wg-gesucht.de',getSubject:()=>id,getPlainBody:()=>id,getBody:()=>id});
+  ctx.GmailApp={search:(q,offset)=>{assert.ok(q.includes('after:'));assert.equal(offset,0);return [
+    {getMessages:()=>[msg('old',50),msg('middle',5),msg('newest',0.1)]},
+    {getMessages:()=>[msg('recent',1),msg('older',8)]}];}};
+  const s=ctx.emptyState_();s.cursor=300;
+  assert.equal(ctx.nextEmails_(s).map(x=>x.id).join(','),'newest,recent,middle');
+});
 console.log('\n' + count + ' tests passed. No Google services contacted.');
-
